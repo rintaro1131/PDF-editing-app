@@ -137,10 +137,14 @@
             position: absolute;
             top: 0;
             left: 0;
-            right: 0;
-            bottom: 0;
-            pointer-events: auto;
-            cursor: crosshair;
+            width: 100%;
+            height: 100%;
+            z-index: 100;
+            /* Increased z-index */
+            pointer-events: auto !important;
+            cursor: crosshair !important;
+            background-color: transparent;
+            /* Ensure transparent */
         }
 
         /* Sidebar */
@@ -515,6 +519,8 @@
                 height: auto;
                 overflow: visible;
                 background-color: white;
+                display: block;
+                /* Reset flex */
             }
 
             header,
@@ -527,6 +533,7 @@
             main {
                 display: block;
                 overflow: visible;
+                height: auto;
             }
 
             #viewer-container {
@@ -534,17 +541,35 @@
                 background-color: white;
                 overflow: visible;
                 display: block;
+                height: auto;
             }
 
             #pdf-wrapper {
                 box-shadow: none;
-                margin: 0;
-                width: 100% !important;
+                margin: 0 auto;
+                width: auto !important;
+                height: auto !important;
+                max-width: 100%;
+                max-height: 100vh;
+                page-break-inside: avoid;
+            }
+
+            canvas {
+                max-width: 100%;
+                max-height: 100vh;
+                width: auto !important;
+                height: auto !important;
+                object-fit: contain;
             }
 
             * {
                 -webkit-print-color-adjust: exact !important;
                 print-color-adjust: exact !important;
+            }
+
+            #annotation-layer {
+                width: 100% !important;
+                height: 100% !important;
             }
         }
     </style>
@@ -740,6 +765,14 @@
         document.querySelectorAll('input[name="mode"]').forEach(radio => {
             radio.addEventListener('change', (e) => {
                 state.mode = e.target.value;
+                // Force disable graph mode when switching to other modes to prevent confusion
+                if (state.mode !== 'point') { // Graph mode only makes sense with points, but let's just reset it for clarity unless user explicitly checks it
+                    // Actually, let's just uncheck the box if they switch main modes, or keep it?
+                    // User said "Change to red dot". That's a color change.
+                    // If they change MODE (Point -> Text), we should probably disable Graph Mode to avoid "Can't add text" confusion.
+                    state.isGraphMode = false;
+                    graphModeCheckbox.checked = false;
+                }
                 updateUIForMode();
                 state.selectedAnnotationId = null;
                 renderAnnotations();
@@ -895,6 +928,9 @@
         });
 
         annotationLayer.addEventListener('click', (e) => {
+            // Debug Info
+            console.log('Click on annotationLayer', e.target, state.mode, state.isGraphMode);
+
             // If in Graph Mode, handle dot selection
             if (state.isGraphMode) {
                 if (e.target.classList.contains('dot')) {
@@ -955,18 +991,37 @@
         function addAnnotation(data) {
             pushState();
             const id = Date.now().toString();
+            // Use annotationLayer dimensions for percentage calculation because canvas dimensions might be different (high DPI or responsive)
+            const layerWidth = annotationLayer.clientWidth || canvas.width;
+            const layerHeight = annotationLayer.clientHeight || canvas.height;
+
+            if (!layerWidth || !layerHeight) {
+                console.error('Annotation layer dimensions are invalid:', layerWidth, layerHeight);
+                alert('エラー: 描画領域のサイズが取得できませんでした。ページを再読み込みしてください。');
+                return;
+            }
+
             const annotation = {
                 id,
                 pageNumber: state.pageNum,
-                xPct: data.x / canvas.width,
-                yPct: data.y / canvas.height,
-                wPct: data.width ? data.width / canvas.width : 0,
-                hPct: data.height ? data.height / canvas.height : 0,
+                xPct: data.x / layerWidth,
+                yPct: data.y / layerHeight,
+                wPct: data.width ? data.width / layerWidth : 0,
+                hPct: data.height ? data.height / layerHeight : 0,
                 ...data
             };
+            if (isNaN(annotation.xPct) || isNaN(annotation.yPct)) {
+                console.error('Invalid annotation coordinates:', annotation);
+                return;
+            }
+
             state.annotations.push(annotation);
             state.selectedAnnotationId = id;
-            renderAnnotations();
+            try {
+                renderAnnotations();
+            } catch (e) {
+                console.error('Error rendering annotations:', e);
+            }
             renderSidebar();
         }
 
@@ -1050,84 +1105,91 @@
         }
 
         function renderAnnotations() {
-            annotationLayer.innerHTML = '';
-            const pageAnnotations = state.annotations.filter(a => a.pageNumber === state.pageNum);
+            try {
+                annotationLayer.innerHTML = '';
+                const pageAnnotations = state.annotations.filter(a => a.pageNumber === state.pageNum);
 
-            // Draw Graph Lines
-            if (state.selectedDotIds.size > 1) {
-                const svgNS = "http://www.w3.org/2000/svg";
-                const svg = document.createElementNS(svgNS, "svg");
-                svg.style.position = "absolute";
-                svg.style.top = "0";
-                svg.style.left = "0";
-                svg.style.width = "100%";
-                svg.style.height = "100%";
-                svg.style.pointerEvents = "none";
-                svg.style.zIndex = "5"; // Below dots (z-index 10)
+                // Draw Graph Lines
+                if (state.selectedDotIds.size > 1) {
+                    const svgNS = "http://www.w3.org/2000/svg";
+                    const svg = document.createElementNS(svgNS, "svg");
+                    svg.style.position = "absolute";
+                    svg.style.top = "0";
+                    svg.style.left = "0";
+                    svg.style.width = "100%";
+                    svg.style.height = "100%";
+                    svg.style.pointerEvents = "none";
+                    svg.style.zIndex = "5"; // Below dots (z-index 10)
+                    svg.setAttribute("viewBox", `0 0 ${canvas.width} ${canvas.height}`);
 
-                const selectedPoints = pageAnnotations.filter(a => state.selectedDotIds.has(a.id) && a.type === 'point');
-                const bluePoints = selectedPoints.filter(a => a.color === 'blue').sort((a, b) => a.xPct - b.xPct);
-                const redPoints = selectedPoints.filter(a => a.color === 'red').sort((a, b) => a.xPct - b.xPct);
+                    const selectedPoints = pageAnnotations.filter(a => state.selectedDotIds.has(a.id) && a.type === 'point');
+                    const bluePoints = selectedPoints.filter(a => a.color === 'blue').sort((a, b) => a.xPct - b.xPct);
+                    const redPoints = selectedPoints.filter(a => a.color === 'red').sort((a, b) => a.xPct - b.xPct);
 
-                [bluePoints, redPoints].forEach(points => {
-                    if (points.length > 1) {
-                        const polyline = document.createElementNS(svgNS, "polyline");
-                        const pointsStr = points.map(p => `${p.xPct * canvas.width},${p.yPct * canvas.height}`).join(' ');
-                        polyline.setAttribute("points", pointsStr);
-                        polyline.setAttribute("fill", "none");
-                        polyline.setAttribute("stroke", points[0].color === 'blue' ? "var(--blue-color)" : "var(--red-color)");
-                        polyline.setAttribute("stroke-width", "2");
-                        svg.appendChild(polyline);
+                    [bluePoints, redPoints].forEach(points => {
+                        if (points.length > 1) {
+                            const polyline = document.createElementNS(svgNS, "polyline");
+                            const pointsStr = points.map(p => `${p.xPct * canvas.width},${p.yPct * canvas.height}`).join(' ');
+                            polyline.setAttribute("points", pointsStr);
+                            polyline.setAttribute("fill", "none");
+                            polyline.setAttribute("stroke", points[0].color === 'blue' ? "var(--blue-color)" : "var(--red-color)");
+                            polyline.setAttribute("stroke-width", "2");
+                            polyline.style.pointerEvents = "none"; // Ensure lines don't block clicks
+                            svg.appendChild(polyline);
+                        }
+                    });
+
+                    annotationLayer.appendChild(svg);
+                }
+
+                pageAnnotations.forEach(ann => {
+                    const el = document.createElement('div');
+                    el.classList.add('annotation');
+                    el.dataset.id = ann.id;
+
+                    // Use percentages for positioning
+                    el.style.left = `${ann.xPct * 100}%`;
+                    el.style.top = `${ann.yPct * 100}%`;
+
+                    if (state.selectedAnnotationId === ann.id) {
+                        el.classList.add('selected');
                     }
+
+                    if (ann.type === 'point') {
+                        el.classList.add('dot', ann.color, ann.size);
+                        if (state.isGraphMode && state.selectedDotIds.has(ann.id)) {
+                            el.style.boxShadow = '0 0 0 3px rgba(0,0,0,0.3)';
+                        }
+                    } else if (ann.type === 'text') {
+                        el.classList.add('text-annotation', ann.color, ann.size);
+                        el.textContent = ann.text;
+                        el.ondblclick = (e) => {
+                            e.stopPropagation();
+                            // For editing, we need pixel coordinates for the input
+                            const rect = annotationLayer.getBoundingClientRect();
+                            const x = ann.xPct * rect.width;
+                            const y = ann.yPct * rect.height;
+                            showTextInput(x, y, ann.id);
+                        };
+                    } else if (ann.type === 'highlight') {
+                        el.classList.add('highlight-annotation');
+                        el.style.width = `${ann.wPct * 100}%`;
+                        el.style.height = `${ann.hPct * 100}%`;
+                        // Highlight origin is top-left, others are center. 
+                        // Adjust css: highlight is absolute top/left, so no translate needed.
+                        // But our common class might have translate.
+                        // Let's override translate for highlight.
+                        el.style.transform = 'none';
+                    } else if (ann.type === 'stamp') {
+                        el.classList.add('stamp-annotation', ann.stampType);
+                        el.textContent = ann.stampType.toUpperCase();
+                    }
+
+                    annotationLayer.appendChild(el);
                 });
-
-                annotationLayer.appendChild(svg);
+            } catch (e) {
+                console.error('Fatal error in renderAnnotations:', e);
             }
-
-            pageAnnotations.forEach(ann => {
-                const el = document.createElement('div');
-                el.classList.add('annotation');
-                el.dataset.id = ann.id;
-
-                // Calculate pixel positions
-                const x = ann.xPct * canvas.width;
-                const y = ann.yPct * canvas.height;
-
-                el.style.left = `${x}px`;
-                el.style.top = `${y}px`;
-
-                if (state.selectedAnnotationId === ann.id) {
-                    el.classList.add('selected');
-                }
-
-                if (ann.type === 'point') {
-                    el.classList.add('dot', ann.color, ann.size);
-                    if (state.isGraphMode && state.selectedDotIds.has(ann.id)) {
-                        el.style.boxShadow = '0 0 0 3px rgba(0,0,0,0.3)';
-                    }
-                } else if (ann.type === 'text') {
-                    el.classList.add('text-annotation', ann.color, ann.size);
-                    el.textContent = ann.text;
-                    el.ondblclick = (e) => {
-                        e.stopPropagation();
-                        showTextInput(x, y, ann.id);
-                    };
-                } else if (ann.type === 'highlight') {
-                    el.classList.add('highlight-annotation');
-                    el.style.width = `${ann.wPct * canvas.width}px`;
-                    el.style.height = `${ann.hPct * canvas.height}px`;
-                    // Highlight origin is top-left, others are center. 
-                    // Adjust css: highlight is absolute top/left, so no translate needed.
-                    // But our common class might have translate.
-                    // Let's override translate for highlight.
-                    el.style.transform = 'none';
-                } else if (ann.type === 'stamp') {
-                    el.classList.add('stamp-annotation', ann.stampType);
-                    el.textContent = ann.stampType.toUpperCase();
-                }
-
-                annotationLayer.appendChild(el);
-            });
         }
 
         function renderSidebar() {
