@@ -300,6 +300,10 @@
             background-color: var(--red-color);
         }
 
+        .dot.black {
+            background-color: #333;
+        }
+
         .dot.small {
             width: 8px;
             height: 8px;
@@ -317,24 +321,28 @@
 
         /* Text Annotation */
         .text-annotation {
-            background: rgba(255, 255, 255, 0.8);
-            padding: 2px 5px;
-            border-radius: 4px;
-            border: 1px solid transparent;
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            border: none;
             font-size: 14px;
             white-space: nowrap;
             color: var(--text-color);
             transform: translate(0, -50%);
+            text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+            /* Improve readability */
         }
 
         .text-annotation.blue {
             color: var(--blue-color);
-            border-color: var(--blue-color);
         }
 
         .text-annotation.red {
             color: var(--red-color);
-            border-color: var(--red-color);
+        }
+
+        .text-annotation.black {
+            color: #333;
         }
 
         .text-annotation.small {
@@ -388,13 +396,20 @@
             position: absolute;
             z-index: 100;
             font-size: 14px;
-            padding: 4px;
+            padding: 0;
+            /* Remove padding to match text style */
             border: 1px solid var(--primary-color);
-            border-radius: 4px;
+            border-radius: 0;
+            /* Remove radius */
             outline: none;
             min-width: 100px;
-            background: white;
+            background: rgba(255, 255, 255, 0.9);
+            /* Slight background for readability while typing */
             box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            transform: translate(0, -50%);
+            /* Center vertically on cursor */
+            color: var(--text-color);
+            /* Default color */
         }
 
         /* Highlight animation */
@@ -506,6 +521,10 @@
 
         .color-sample.red {
             background-color: var(--red-color);
+        }
+
+        .color-sample.black {
+            background-color: #333;
         }
 
         /* Print Styles */
@@ -652,10 +671,10 @@
                         class="color-sample blue"></span></label>
                 <label class="radio-label"><input type="radio" name="color" value="red"> <span
                         class="color-sample red"></span></label>
-                <span style="margin-left:5px;">サイズ:</span>
-                <label class="radio-label"><input type="radio" name="size" value="small"> 小</label>
-                <label class="radio-label"><input type="radio" name="size" value="medium" checked> 中</label>
-                <label class="radio-label"><input type="radio" name="size" value="large"> 大</label>
+                <label class="radio-label"><input type="radio" name="color" value="black"> <span
+                        class="color-sample black"></span></label>
+                <span style="margin-left:5px;">サイズ(px):</span>
+                <input type="number" id="size-input" value="14" min="1" max="100" style="width: 50px; padding: 2px;">
             </div>
 
             <div class="control-item" id="graph-controls">
@@ -700,7 +719,7 @@
             dragStart: null, // {x, y} for highlight dragging
             currentSettings: {
                 color: 'blue',
-                size: 'medium',
+                size: 14,
                 category: '未分類',
                 stampType: 'ok'
             },
@@ -730,6 +749,7 @@
         const styleControls = document.getElementById('style-controls');
         const stampTypeSelect = document.getElementById('stamp-type');
         const graphModeCheckbox = document.getElementById('graph-mode');
+        const sizeInput = document.getElementById('size-input');
 
         // --- Initialization ---
 
@@ -793,8 +813,31 @@
         }
 
         // Settings
-        document.querySelectorAll('input[name="size"]').forEach(r => r.addEventListener('change', e => state.currentSettings.size = e.target.value));
-        document.querySelectorAll('input[name="color"]').forEach(r => r.addEventListener('change', e => state.currentSettings.color = e.target.value));
+        sizeInput.addEventListener('change', (e) => {
+            const val = parseInt(e.target.value, 10);
+            if (val > 0) {
+                state.currentSettings.size = val;
+                if (state.selectedAnnotationId) {
+                    pushState();
+                    const ann = state.annotations.find(a => a.id === state.selectedAnnotationId);
+                    if (ann) {
+                        ann.size = val;
+                        renderAnnotations();
+                    }
+                }
+            }
+        });
+        document.querySelectorAll('input[name="color"]').forEach(r => r.addEventListener('change', e => {
+            state.currentSettings.color = e.target.value;
+            if (state.selectedAnnotationId) {
+                pushState();
+                const ann = state.annotations.find(a => a.id === state.selectedAnnotationId);
+                if (ann) {
+                    ann.color = state.currentSettings.color;
+                    renderAnnotations();
+                }
+            }
+        }));
         categorySelect.addEventListener('change', e => state.currentSettings.category = e.target.value);
         categorySelect.addEventListener('change', e => state.currentSettings.category = e.target.value);
         stampTypeSelect.addEventListener('change', e => state.currentSettings.stampType = e.target.value);
@@ -1032,13 +1075,32 @@
             input.style.left = x + 'px';
             input.style.top = y + 'px';
 
+            // Apply current size to input
+            const fontSize = existingId
+                ? (state.annotations.find(a => a.id === existingId).size || 14)
+                : state.currentSettings.size;
+            input.style.fontSize = `${fontSize}px`;
+
+            // Apply current color to input
+            const colorName = existingId
+                ? (state.annotations.find(a => a.id === existingId).color || 'black')
+                : state.currentSettings.color;
+
+            if (colorName === 'blue') input.style.color = 'var(--blue-color)';
+            else if (colorName === 'red') input.style.color = 'var(--red-color)';
+            else input.style.color = '#333';
+
             if (existingId) {
                 const ann = state.annotations.find(a => a.id === existingId);
                 input.value = ann.text || '';
             }
 
+            let isComposing = false;
+            input.addEventListener('compositionstart', () => isComposing = true);
+            input.addEventListener('compositionend', () => isComposing = false);
+
             input.onkeydown = (e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' && !isComposing) {
                     const text = input.value.trim();
                     if (text) {
                         if (existingId) {
@@ -1125,14 +1187,19 @@
                     const selectedPoints = pageAnnotations.filter(a => state.selectedDotIds.has(a.id) && a.type === 'point');
                     const bluePoints = selectedPoints.filter(a => a.color === 'blue').sort((a, b) => a.xPct - b.xPct);
                     const redPoints = selectedPoints.filter(a => a.color === 'red').sort((a, b) => a.xPct - b.xPct);
+                    const blackPoints = selectedPoints.filter(a => a.color === 'black').sort((a, b) => a.xPct - b.xPct);
 
-                    [bluePoints, redPoints].forEach(points => {
+                    [bluePoints, redPoints, blackPoints].forEach(points => {
                         if (points.length > 1) {
                             const polyline = document.createElementNS(svgNS, "polyline");
                             const pointsStr = points.map(p => `${p.xPct * canvas.width},${p.yPct * canvas.height}`).join(' ');
                             polyline.setAttribute("points", pointsStr);
                             polyline.setAttribute("fill", "none");
-                            polyline.setAttribute("stroke", points[0].color === 'blue' ? "var(--blue-color)" : "var(--red-color)");
+                            let strokeColor = "var(--blue-color)";
+                            if (points[0].color === 'red') strokeColor = "var(--red-color)";
+                            else if (points[0].color === 'black') strokeColor = "#333";
+
+                            polyline.setAttribute("stroke", strokeColor);
                             polyline.setAttribute("stroke-width", "2");
                             polyline.style.pointerEvents = "none"; // Ensure lines don't block clicks
                             svg.appendChild(polyline);
@@ -1156,12 +1223,21 @@
                     }
 
                     if (ann.type === 'point') {
-                        el.classList.add('dot', ann.color, ann.size);
+                        el.classList.add('dot', ann.color);
+                        // Use numeric size
+                        const size = ann.size || 14;
+                        el.style.width = `${size}px`;
+                        el.style.height = `${size}px`;
+
                         if (state.isGraphMode && state.selectedDotIds.has(ann.id)) {
                             el.style.boxShadow = '0 0 0 3px rgba(0,0,0,0.3)';
                         }
                     } else if (ann.type === 'text') {
-                        el.classList.add('text-annotation', ann.color, ann.size);
+                        el.classList.add('text-annotation', ann.color);
+                        // Use numeric size
+                        const size = ann.size || 14;
+                        el.style.fontSize = `${size}px`;
+
                         el.textContent = ann.text;
                         el.ondblclick = (e) => {
                             e.stopPropagation();
@@ -1356,16 +1432,21 @@
 
                         const bluePoints = pagePoints.filter(a => a.color === 'blue').sort((a, b) => a.xPct - b.xPct);
                         const redPoints = pagePoints.filter(a => a.color === 'red').sort((a, b) => a.xPct - b.xPct);
+                        const blackPoints = pagePoints.filter(a => a.color === 'black').sort((a, b) => a.xPct - b.xPct);
 
-                        [bluePoints, redPoints].forEach(points => {
+                        [bluePoints, redPoints, blackPoints].forEach(points => {
                             for (let j = 0; j < points.length - 1; j++) {
                                 const p1 = points[j];
                                 const p2 = points[j + 1];
 
+                                let color = PDFLib.rgb(0, 0, 1);
+                                if (p1.color === 'red') color = PDFLib.rgb(1, 0, 0);
+                                else if (p1.color === 'black') color = PDFLib.rgb(0, 0, 0);
+
                                 page.drawLine({
                                     start: { x: p1.xPct * pageWidth, y: pageHeight - (p1.yPct * pageHeight) },
                                     end: { x: p2.xPct * pageWidth, y: pageHeight - (p2.yPct * pageHeight) },
-                                    color: p1.color === 'blue' ? PDFLib.rgb(0, 0, 1) : PDFLib.rgb(1, 0, 0),
+                                    color: color,
                                     thickness: 2,
                                 });
                             }
@@ -1392,10 +1473,12 @@
                     else color = PDFLib.rgb(0, 0, 0);
 
                     if (ann.type === 'point') {
-                        const size = ann.size === 'large' ? 10 : (ann.size === 'small' ? 4 : 7);
-                        page.drawCircle({ x, y, size, color });
+                        const size = (ann.size || 14) / 2; // drawCircle takes radius, but our size is diameter? 
+                        // Wait, previous code: large=10, small=4. 
+                        // If user inputs 14 (diameter), radius is 7.
+                        page.drawCircle({ x, y, size: (ann.size || 14) / 2, color });
                     } else if (ann.type === 'text') {
-                        const fontSize = ann.size === 'large' ? 20 : (ann.size === 'small' ? 12 : 16);
+                        const fontSize = ann.size || 14;
                         page.drawText(ann.text, { x, y, size: fontSize, color });
                     } else if (ann.type === 'highlight') {
                         const w = ann.wPct * pageWidth;
