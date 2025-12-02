@@ -262,7 +262,8 @@
         .annotation {
             position: absolute;
             z-index: 10;
-            cursor: pointer;
+            cursor: move;
+            /* Indicate draggable */
         }
 
         .annotation.selected {
@@ -361,6 +362,23 @@
         .highlight-annotation {
             background-color: var(--highlight-color);
             mix-blend-mode: multiply;
+        }
+
+        /* Whiteout Annotation */
+        .whiteout-annotation {
+            position: absolute;
+            background-color: white;
+            z-index: 5;
+            /* Below text/dots but above PDF */
+        }
+
+        /* Drag Selection Feedback */
+        .drag-selection {
+            position: absolute;
+            border: 2px dotted #333;
+            background-color: rgba(255, 255, 255, 0.3);
+            pointer-events: none;
+            z-index: 100;
         }
 
         /* Stamp Annotation */
@@ -596,6 +614,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <!-- pdf-lib CDN -->
     <script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+    <script src="https://unpkg.com/@pdf-lib/fontkit@1.1.1/dist/fontkit.umd.js"></script>
 </head>
 
 <body>
@@ -654,6 +673,7 @@
                 <label class="radio-label"><input type="radio" name="mode" value="point" checked> 点</label>
                 <label class="radio-label"><input type="radio" name="mode" value="text"> テキスト</label>
                 <label class="radio-label"><input type="radio" name="mode" value="highlight"> ハイライト</label>
+                <label class="radio-label"><input type="radio" name="mode" value="whiteout"> 白塗り</label>
                 <label class="radio-label"><input type="radio" name="mode" value="stamp"> スタンプ</label>
             </div>
 
@@ -673,25 +693,22 @@
                         class="color-sample red"></span></label>
                 <label class="radio-label"><input type="radio" name="color" value="black"> <span
                         class="color-sample black"></span></label>
-                <span style="margin-left:5px;">サイズ(px):</span>
-                <input type="number" id="size-input" value="14" min="1" max="100" style="width: 50px; padding: 2px;">
+                <span style="margin-left:5px;">サイズ:</span>
+                <span id="point-size-control">
+                    <label class="radio-label"><input type="radio" name="size" value="8"> 小</label>
+                    <label class="radio-label"><input type="radio" name="size" value="12" checked> 中</label>
+                    <label class="radio-label"><input type="radio" name="size" value="16"> 大</label>
+                </span>
+                <span id="text-size-control" style="display:none;">
+                    <input type="number" id="font-size-input" value="14" min="8" max="100"
+                        style="width: 50px; padding: 2px;"> px
+                </span>
             </div>
 
             <div class="control-item" id="graph-controls">
                 <label class="radio-label">
-                    <input type="checkbox" id="graph-mode"> グラフモード
+                    <input type="checkbox" id="graph-mode-chk"> グラフモード (青い点を選択)
                 </label>
-            </div>
-
-            <div class="control-item">
-                <span>種別:</span>
-                <select id="category-select">
-                    <option value="未分類">未分類</option>
-                    <option value="重要">重要</option>
-                    <option value="要確認">要確認</option>
-                    <option value="修正">修正</option>
-                    <option value="質問">質問</option>
-                </select>
             </div>
         </div>
 
@@ -719,13 +736,17 @@
             dragStart: null, // {x, y} for highlight dragging
             currentSettings: {
                 color: 'blue',
-                size: 14,
-                category: '未分類',
+                size: 12, // Default Medium
                 stampType: 'ok'
             },
             isGraphMode: false,
             selectedDotIds: new Set(),
-            pdfBuffer: null
+            pdfBuffer: null,
+            // Drag & Drop State
+            isDragging: false,
+            draggedAnnotationId: null,
+            dragOffset: { x: 0, y: 0 },
+            editingId: null // Track which annotation is being edited
         };
 
         // DOM Elements
@@ -740,7 +761,6 @@
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
         const downloadPdfBtn = document.getElementById('download-pdf');
-        const categorySelect = document.getElementById('category-select');
         const commentList = document.getElementById('comment-list');
         const undoBtn = document.getElementById('undo-btn');
         const redoBtn = document.getElementById('redo-btn');
@@ -748,8 +768,10 @@
         const stampControls = document.getElementById('stamp-controls');
         const styleControls = document.getElementById('style-controls');
         const stampTypeSelect = document.getElementById('stamp-type');
-        const graphModeCheckbox = document.getElementById('graph-mode');
-        const sizeInput = document.getElementById('size-input');
+        const graphModeCheckbox = document.getElementById('graph-mode-chk');
+        const pointSizeControl = document.getElementById('point-size-control');
+        const textSizeControl = document.getElementById('text-size-control');
+        const fontSizeInput = document.getElementById('font-size-input');
 
         // --- Initialization ---
 
@@ -803,25 +825,63 @@
             if (state.mode === 'stamp') {
                 stampControls.style.display = 'flex';
                 styleControls.style.display = 'none';
-            } else if (state.mode === 'highlight') {
+            } else if (state.mode === 'highlight' || state.mode === 'whiteout') {
                 stampControls.style.display = 'none';
-                styleControls.style.display = 'none'; // Highlight has fixed style for now
+                styleControls.style.display = 'none'; // Highlight/Whiteout has fixed style or drag-based size
             } else {
                 stampControls.style.display = 'none';
                 styleControls.style.display = 'flex';
+
+                // Toggle between Point (S/M/L) and Text (Numeric) size controls
+                if (state.mode === 'text') {
+                    pointSizeControl.style.display = 'none';
+                    textSizeControl.style.display = 'inline';
+                } else {
+                    pointSizeControl.style.display = 'inline';
+                    textSizeControl.style.display = 'none';
+                }
             }
         }
 
         // Settings
-        sizeInput.addEventListener('change', (e) => {
-            const val = parseInt(e.target.value, 10);
-            if (val > 0) {
-                state.currentSettings.size = val;
+        // Point Size (S/M/L)
+        document.querySelectorAll('input[name="size"]').forEach(radio => {
+            radio.addEventListener('change', (e) => {
+                const newSize = parseInt(e.target.value);
+                state.currentSettings.size = newSize;
+
+                // Only apply to Point annotations if selected
                 if (state.selectedAnnotationId) {
-                    pushState();
                     const ann = state.annotations.find(a => a.id === state.selectedAnnotationId);
-                    if (ann) {
-                        ann.size = val;
+                    if (ann && ann.type === 'point') {
+                        ann.size = newSize;
+                        renderAnnotations();
+                    }
+                }
+            });
+        });
+
+        // Text Font Size (Numeric)
+        fontSizeInput.addEventListener('input', (e) => {
+            const newSize = parseInt(e.target.value);
+            if (newSize > 0) {
+                state.currentSettings.size = newSize;
+
+                // If editing, update the input box immediately
+                if (state.editingId) {
+                    const input = document.querySelector('.annotation-input');
+                    if (input) {
+                        input.style.fontSize = `${newSize}px`;
+                    }
+                    const ann = state.annotations.find(a => a.id === state.editingId);
+                    if (ann) ann.size = newSize;
+                }
+
+                // If selected (Text), update
+                if (state.selectedAnnotationId) {
+                    const ann = state.annotations.find(a => a.id === state.selectedAnnotationId);
+                    if (ann && ann.type === 'text') {
+                        ann.size = newSize;
                         renderAnnotations();
                     }
                 }
@@ -838,8 +898,7 @@
                 }
             }
         }));
-        categorySelect.addEventListener('change', e => state.currentSettings.category = e.target.value);
-        categorySelect.addEventListener('change', e => state.currentSettings.category = e.target.value);
+
         stampTypeSelect.addEventListener('change', e => state.currentSettings.stampType = e.target.value);
 
         graphModeCheckbox.addEventListener('change', (e) => {
@@ -929,9 +988,44 @@
         // --- Annotation Interaction ---
 
         annotationLayer.addEventListener('mousedown', (e) => {
-            if (e.target !== annotationLayer && !e.target.classList.contains('highlight-annotation')) return;
+            if (e.target !== annotationLayer && !e.target.classList.contains('highlight-annotation') && !e.target.classList.contains('annotation')) return;
 
-            if (state.mode === 'highlight') {
+            // Handle Dragging Start
+            if (e.target.closest('.annotation')) {
+                const el = e.target.closest('.annotation');
+                const id = el.dataset.id;
+                const ann = state.annotations.find(a => a.id === id);
+
+                // Don't drag if in graph mode and clicking a dot (selection takes precedence)
+                if (state.isGraphMode && ann.type === 'point') return;
+
+                // Allow clicking "through" whiteout/highlight to add text/points on top
+                if ((state.mode === 'text' || state.mode === 'point' || state.mode === 'stamp') &&
+                    (ann.type === 'whiteout' || ann.type === 'highlight')) {
+                    // Don't start dragging, let the click event handle addition
+                    return;
+                }
+
+                state.isDragging = true;
+                state.draggedAnnotationId = id;
+                const rect = annotationLayer.getBoundingClientRect();
+
+                // Calculate offset from the annotation's top-left
+                // ann.xPct is left, ann.yPct is top
+                const annX = ann.xPct * rect.width;
+                const annY = ann.yPct * rect.height;
+
+                state.dragOffset = {
+                    x: (e.clientX - rect.left) - annX,
+                    y: (e.clientY - rect.top) - annY
+                };
+
+                // Select it too
+                selectAnnotation(id);
+                return;
+            }
+
+            if (state.mode === 'highlight' || state.mode === 'whiteout') {
                 const rect = annotationLayer.getBoundingClientRect();
                 state.dragStart = {
                     x: e.clientX - rect.left,
@@ -941,13 +1035,64 @@
         });
 
         annotationLayer.addEventListener('mousemove', (e) => {
-            if (state.mode === 'highlight' && state.dragStart) {
-                // Visual feedback for dragging could be added here (temporary div)
+            const rect = annotationLayer.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (state.isDragging && state.draggedAnnotationId) {
+                const ann = state.annotations.find(a => a.id === state.draggedAnnotationId);
+                if (ann) {
+                    // Update position
+                    // New Left = MouseX - OffsetX
+                    // Convert back to percentage
+                    const newX = x - state.dragOffset.x;
+                    const newY = y - state.dragOffset.y;
+
+                    ann.xPct = newX / rect.width;
+                    ann.yPct = newY / rect.height;
+
+                    // Re-render immediately for smooth drag
+                    renderAnnotations();
+                }
+                return;
+            }
+
+            if ((state.mode === 'highlight' || state.mode === 'whiteout') && state.dragStart) {
+                // Visual feedback for dragging
+                const rect = annotationLayer.getBoundingClientRect();
+                const currentX = e.clientX - rect.left;
+                const currentY = e.clientY - rect.top;
+
+                const x = Math.min(state.dragStart.x, currentX);
+                const y = Math.min(state.dragStart.y, currentY);
+                const width = Math.abs(currentX - state.dragStart.x);
+                const height = Math.abs(currentY - state.dragStart.y);
+
+                let selectionBox = document.getElementById('drag-selection-box');
+                if (!selectionBox) {
+                    selectionBox = document.createElement('div');
+                    selectionBox.id = 'drag-selection-box';
+                    selectionBox.className = 'drag-selection';
+                    annotationLayer.appendChild(selectionBox);
+                }
+
+                selectionBox.style.left = x + 'px';
+                selectionBox.style.top = y + 'px';
+                selectionBox.style.width = width + 'px';
+                selectionBox.style.height = height + 'px';
             }
         });
 
         annotationLayer.addEventListener('mouseup', (e) => {
-            if (state.mode === 'highlight' && state.dragStart) {
+            if (state.isDragging) {
+                state.isDragging = false;
+                state.draggedAnnotationId = null;
+                pushState(); // Save state after drag
+                renderSidebar(); // Update sidebar if order changed (though we sort by Y usually)
+                return;
+            }
+
+            if ((state.mode === 'highlight' || state.mode === 'whiteout') && state.dragStart) {
                 const rect = annotationLayer.getBoundingClientRect();
                 const currentX = e.clientX - rect.left;
                 const currentY = e.clientY - rect.top;
@@ -959,14 +1104,17 @@
 
                 if (width > 5 && height > 5) {
                     addAnnotation({
-                        type: 'highlight',
+                        type: state.mode, // 'highlight' or 'whiteout'
                         x, y, width, height,
-                        color: 'yellow', // Fixed for highlight
-                        category: state.currentSettings.category,
+                        color: state.mode === 'highlight' ? 'yellow' : 'white',
                         comment: ''
                     });
                 }
                 state.dragStart = null;
+
+                // Remove selection box
+                const selectionBox = document.getElementById('drag-selection-box');
+                if (selectionBox) selectionBox.remove();
             }
         });
 
@@ -989,10 +1137,23 @@
             }
 
             // If clicked on an existing annotation, select it (handled by bubble up or separate listener)
+            // Note: mousedown handles selection now for dragging. 
+            // But we still need this for simple clicks if we didn't drag? 
+            // Actually mousedown selects. Click might trigger after mouseup.
+            // Let's keep this but ensure it doesn't conflict.
             if (e.target.closest('.annotation')) {
-                const id = e.target.closest('.annotation').dataset.id;
-                selectAnnotation(id);
-                return;
+                const el = e.target.closest('.annotation');
+                const id = el.dataset.id;
+                const ann = state.annotations.find(a => a.id === id);
+
+                // Allow clicking "through" whiteout/highlight to add text/points on top
+                if ((state.mode === 'text' || state.mode === 'point' || state.mode === 'stamp') &&
+                    (ann.type === 'whiteout' || ann.type === 'highlight')) {
+                    // Pass through -> Don't return, so we can add annotation below
+                } else {
+                    // Prevent adding new annotation if clicking existing (normal behavior)
+                    return;
+                }
             }
 
             // If clicked on background
@@ -1007,7 +1168,6 @@
                         x, y,
                         color: state.currentSettings.color,
                         size: state.currentSettings.size,
-                        category: state.currentSettings.category,
                         comment: ''
                     });
                 } else if (state.mode === 'text') {
@@ -1018,7 +1178,6 @@
                         type: 'stamp',
                         x, y,
                         stampType: state.currentSettings.stampType,
-                        category: state.currentSettings.category,
                         comment: '' // Optional
                     });
                 }
@@ -1059,7 +1218,7 @@
             }
 
             state.annotations.push(annotation);
-            state.selectedAnnotationId = id;
+            // state.selectedAnnotationId = id; // Don't auto-select to avoid frame appearing immediately
             try {
                 renderAnnotations();
             } catch (e) {
@@ -1091,60 +1250,61 @@
             else input.style.color = '#333';
 
             if (existingId) {
+                state.editingId = existingId; // Set editing state
                 const ann = state.annotations.find(a => a.id === existingId);
                 input.value = ann.text || '';
+                renderAnnotations(); // Re-render to hide the underlying text
             }
 
             let isComposing = false;
+            let isSaved = false; // Flag to prevent double save (Enter + Blur)
+
             input.addEventListener('compositionstart', () => isComposing = true);
             input.addEventListener('compositionend', () => isComposing = false);
 
+            const saveAndClose = () => {
+                if (isSaved) return;
+                isSaved = true;
+
+                const text = input.value.trim();
+                if (text) {
+                    if (existingId) {
+                        pushState();
+                        const ann = state.annotations.find(a => a.id === existingId);
+                        if (ann) ann.text = text;
+                    } else {
+                        addAnnotation({
+                            type: 'text',
+                            x, y,
+                            text: text,
+                            color: state.currentSettings.color,
+                            size: state.currentSettings.size
+                        });
+                    }
+                }
+
+                input.remove();
+                state.editingId = null; // Clear editing state
+                renderAnnotations();
+                renderSidebar();
+            };
+
             input.onkeydown = (e) => {
                 if (e.key === 'Enter' && !isComposing) {
-                    const text = input.value.trim();
-                    if (text) {
-                        if (existingId) {
-                            pushState();
-                            const ann = state.annotations.find(a => a.id === existingId);
-                            ann.text = text;
-                        } else {
-                            addAnnotation({
-                                type: 'text',
-                                x, y,
-                                text: text,
-                                color: state.currentSettings.color,
-                                size: state.currentSettings.size,
-                                category: state.currentSettings.category
-                            });
-                        }
-                    } else if (existingId) {
-                        // If empty and existing, maybe delete? Or just keep old. Keeping old for now.
-                    }
-                    renderAnnotations();
-                    renderSidebar();
+                    saveAndClose();
                 } else if (e.key === 'Escape') {
+                    isSaved = true; // Don't save on blur if escaped
+                    input.remove();
+                    state.editingId = null; // Clear editing state
                     renderAnnotations();
                 }
             };
 
             input.onblur = () => {
-                const text = input.value.trim();
-                if (text && !existingId) {
-                    addAnnotation({
-                        type: 'text',
-                        x, y,
-                        text: text,
-                        color: state.currentSettings.color,
-                        size: state.currentSettings.size,
-                        category: state.currentSettings.category
-                    });
-                } else if (existingId && text) {
-                    pushState();
-                    const ann = state.annotations.find(a => a.id === existingId);
-                    ann.text = text;
-                }
-                renderAnnotations();
-                renderSidebar();
+                // Delay slightly to allow click events to process (e.g. if clicking another annotation)
+                setTimeout(() => {
+                    saveAndClose();
+                }, 100);
             };
 
             annotationLayer.appendChild(input);
@@ -1161,6 +1321,37 @@
 
         function selectAnnotation(id) {
             state.selectedAnnotationId = id;
+
+            // Update UI based on selection type
+            const ann = state.annotations.find(a => a.id === id);
+            if (ann) {
+                if (ann.type === 'text') {
+                    pointSizeControl.style.display = 'none';
+                    textSizeControl.style.display = 'inline';
+                    fontSizeInput.value = ann.size || 14;
+                    // Also switch mode UI to show style controls if not already
+                    styleControls.style.display = 'flex';
+                    stampControls.style.display = 'none';
+                } else if (ann.type === 'point') {
+                    pointSizeControl.style.display = 'inline';
+                    textSizeControl.style.display = 'none';
+                    // Update radio button
+                    const radio = document.querySelector(`input[name="size"][value="${ann.size}"]`);
+                    if (radio) radio.checked = true;
+
+                    styleControls.style.display = 'flex';
+                    stampControls.style.display = 'none';
+                } else if (ann.type === 'stamp') {
+                    styleControls.style.display = 'none';
+                    stampControls.style.display = 'flex';
+                    stampTypeSelect.value = ann.stampType;
+                } else {
+                    // Highlight/Whiteout
+                    styleControls.style.display = 'none';
+                    stampControls.style.display = 'none';
+                }
+            }
+
             renderAnnotations();
             // Highlight in sidebar
             renderSidebar();
@@ -1170,6 +1361,11 @@
             try {
                 annotationLayer.innerHTML = '';
                 const pageAnnotations = state.annotations.filter(a => a.pageNumber === state.pageNum);
+
+                // Filter out the one being edited so it doesn't show up twice (once as text, once as input)
+                const visibleAnnotations = state.editingId
+                    ? pageAnnotations.filter(a => a.id !== state.editingId)
+                    : pageAnnotations;
 
                 // Draw Graph Lines
                 if (state.selectedDotIds.size > 1) {
@@ -1209,7 +1405,7 @@
                     annotationLayer.appendChild(svg);
                 }
 
-                pageAnnotations.forEach(ann => {
+                visibleAnnotations.forEach(ann => {
                     const el = document.createElement('div');
                     el.classList.add('annotation');
                     el.dataset.id = ann.id;
@@ -1256,6 +1452,11 @@
                         // But our common class might have translate.
                         // Let's override translate for highlight.
                         el.style.transform = 'none';
+                    } else if (ann.type === 'whiteout') {
+                        el.classList.add('whiteout-annotation');
+                        el.style.width = `${ann.wPct * 100}%`;
+                        el.style.height = `${ann.hPct * 100}%`;
+                        el.style.transform = 'none';
                     } else if (ann.type === 'stamp') {
                         el.classList.add('stamp-annotation', ann.stampType);
                         el.textContent = ann.stampType.toUpperCase();
@@ -1282,16 +1483,31 @@
 
                 let content = '';
                 let icon = '';
+                let details = '';
 
                 if (ann.type === 'point') {
-                    content = ann.comment || '(コメントなし)';
+                    content = '点';
                     icon = '●';
+                    // Convert size to label
+                    let sizeLabel = ann.size + 'px';
+                    if (ann.size === 8) sizeLabel = '小';
+                    if (ann.size === 12) sizeLabel = '中';
+                    if (ann.size === 16) sizeLabel = '大';
+                    details = `サイズ: ${sizeLabel}`;
                 } else if (ann.type === 'text') {
-                    content = ann.text;
+                    content = ann.text || '(空のテキスト)';
                     icon = 'T';
+                    let sizeLabel = ann.size + 'px';
+                    if (ann.size === 8) sizeLabel = '小';
+                    if (ann.size === 12) sizeLabel = '中';
+                    if (ann.size === 16) sizeLabel = '大';
+                    details = `サイズ: ${sizeLabel}`;
                 } else if (ann.type === 'highlight') {
                     content = ann.comment || 'ハイライト';
                     icon = 'H';
+                } else if (ann.type === 'whiteout') {
+                    content = ann.comment || 'ホワイトアウト';
+                    icon = 'W';
                 } else if (ann.type === 'stamp') {
                     content = ann.stampType.toUpperCase();
                     icon = 'S';
@@ -1299,7 +1515,7 @@
 
                 li.innerHTML = `
                     <div class="sidebar-item-header">
-                        <span>P.${ann.pageNumber} <span class="sidebar-item-badge ${getBadgeClass(ann.category)}">${ann.category}</span> [${icon}]</span>
+                        <span>P.${ann.pageNumber} [${icon}]</span>
                         <button class="sidebar-delete-btn" onclick="event.stopPropagation(); deleteAnnotation('${ann.id}')">×</button>
                     </div>
                     <div class="sidebar-item-content">${content}</div>
@@ -1321,15 +1537,7 @@
             });
         }
 
-        function getBadgeClass(category) {
-            switch (category) {
-                case '重要': return 'important';
-                case '要確認': return 'check';
-                case '修正': return 'fix';
-                case '質問': return 'question';
-                default: return 'unclassified';
-            }
-        }
+
 
         function highlightAnnotation(id) {
             const el = document.querySelector(`.annotation[data-id="${id}"]`);
@@ -1379,7 +1587,7 @@
         // --- Export ---
 
         function exportCSV() {
-            const headers = ['id', 'type', 'pageNumber', 'xPct', 'yPct', 'widthPct', 'heightPct', 'color', 'size', 'category', 'content', 'stampType'];
+            const headers = ['id', 'type', 'pageNumber', 'xPct', 'yPct', 'widthPct', 'heightPct', 'color', 'size', 'content', 'stampType'];
             const rows = state.annotations.map(a => [
                 a.id,
                 a.type,
@@ -1390,7 +1598,6 @@
                 a.hPct ? a.hPct.toFixed(4) : '',
                 a.color || '',
                 a.size || '',
-                a.category,
                 (a.text || a.comment || '').replace(/"/g, '""'), // Escape quotes
                 a.stampType || ''
             ]);
@@ -1411,8 +1618,30 @@
 
         async function downloadPdf() {
             if (!state.pdfDoc) return;
+
+            const btn = document.getElementById('download-pdf');
+            const originalText = btn.textContent;
+            btn.textContent = '保存中...';
+            btn.disabled = true;
+
+            // Allow UI to update
+            await new Promise(resolve => setTimeout(resolve, 100));
+
             try {
                 const pdfDoc = await PDFLib.PDFDocument.load(state.pdfBuffer);
+
+                // Register fontkit
+                if (typeof fontkit === 'undefined') {
+                    throw new Error('Fontkit library not loaded. Please check your internet connection.');
+                }
+                pdfDoc.registerFontkit(fontkit);
+
+                // Load Japanese font (Google Fonts - Noto Sans JP)
+                // Using WOFF2 for better compression and compatibility
+                const fontUrl = 'https://fonts.gstatic.com/s/notosansjp/v53/-F6jfjtqLzI2JPCgQBnw7HFyzSD-Asug.woff2';
+                const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
+                const customFont = await pdfDoc.embedFont(fontBytes);
+
                 const pages = pdfDoc.getPages();
                 const { width, height } = pages[0].getSize(); // Assuming all pages same size for simplicity, or map per page
 
@@ -1479,22 +1708,44 @@
                         page.drawCircle({ x, y, size: (ann.size || 14) / 2, color });
                     } else if (ann.type === 'text') {
                         const fontSize = ann.size || 14;
-                        page.drawText(ann.text, { x, y, size: fontSize, color });
+                        page.drawText(ann.text, { x, y, size: fontSize, color, font: customFont });
                     } else if (ann.type === 'highlight') {
                         const w = ann.wPct * pageWidth;
                         const h = ann.hPct * pageHeight;
-                        // Highlight rect y is top-left in canvas, so y in PDF is pageHeight - (yPct * pageHeight) - h?
-                        // Wait, yPct is top. So PDF y (bottom-left of rect) = pageHeight - (yPct * pageHeight) - (hPct * pageHeight)
-                        const rectY = pageHeight - (ann.yPct * pageHeight) - h;
+                        // PDF-lib origin is bottom-left
+                        const pdfY = pageHeight - (ann.yPct * pageHeight) - h;
 
                         page.drawRectangle({
-                            x, y: rectY, width: w, height: h,
-                            color, opacity: 0.4
+                            x: ann.xPct * pageWidth,
+                            y: pdfY,
+                            width: w,
+                            height: h,
+                            color: PDFLib.rgb(1, 1, 0),
+                            opacity: 0.3,
+                        });
+                    } else if (ann.type === 'whiteout') {
+                        const w = ann.wPct * pageWidth;
+                        const h = ann.hPct * pageHeight;
+                        const pdfY = pageHeight - (ann.yPct * pageHeight) - h;
+
+                        page.drawRectangle({
+                            x: ann.xPct * pageWidth,
+                            y: pdfY,
+                            width: w,
+                            height: h,
+                            color: PDFLib.rgb(1, 1, 1),
+                            opacity: 1,
+                            borderColor: PDFLib.rgb(0.8, 0.8, 0.8), // Optional: light gray border for whiteout in PDF?
+                            borderWidth: 0, // Actually user asked for dotted border on screen, but usually whiteout is invisible on PDF. 
+                            // User said "dragged range should be shown as dotted line". 
+                            // Usually whiteout is meant to hide things. 
+                            // Let's make it pure white rectangle.
                         });
                     } else if (ann.type === 'stamp') {
                         page.drawText(ann.stampType.toUpperCase(), {
                             x, y, size: 12, color,
-                            borderColor: color, borderWidth: 2
+                            borderColor: color, borderWidth: 2,
+                            font: customFont
                         });
                         // Drawing a box around it is harder without font metrics, skipping for MVP
                     }
@@ -1507,8 +1758,11 @@
                 link.download = 'annotated.pdf';
                 link.click();
             } catch (err) {
-                console.error(err);
-                alert('PDF生成エラー');
+                console.error('PDF Export Error:', err);
+                alert('PDF生成エラー: ' + err.message);
+            } finally {
+                btn.textContent = originalText;
+                btn.disabled = false;
             }
         }
     </script>
