@@ -15,6 +15,7 @@
             --blue-color: #007bff;
             --red-color: #dc3545;
             --highlight-color: rgba(255, 255, 0, 0.4);
+            --success-color: #2ecc71;
             --sidebar-width: 300px;
         }
 
@@ -513,6 +514,16 @@
             background-color: #357abd;
         }
 
+        button.success {
+            background-color: var(--success-color);
+            color: white;
+            border: none;
+        }
+
+        button.success:hover {
+            background-color: #27ae60;
+        }
+
         select,
         input[type="radio"],
         input[type="checkbox"] {
@@ -713,6 +724,7 @@
         </div>
 
         <div class="control-group">
+            <button id="print-btn" class="success">印刷</button>
             <button id="download-pdf" class="primary">PDF保存</button>
         </div>
     </footer>
@@ -761,6 +773,7 @@
         const prevPageBtn = document.getElementById('prev-page');
         const nextPageBtn = document.getElementById('next-page');
         const downloadPdfBtn = document.getElementById('download-pdf');
+        const printBtn = document.getElementById('print-btn');
         const commentList = document.getElementById('comment-list');
         const undoBtn = document.getElementById('undo-btn');
         const redoBtn = document.getElementById('redo-btn');
@@ -799,6 +812,7 @@
         prevPageBtn.addEventListener('click', () => changePage(-1));
         nextPageBtn.addEventListener('click', () => changePage(1));
         downloadPdfBtn.addEventListener('click', downloadPdf);
+        printBtn.addEventListener('click', () => window.print());
         exportCsvBtn.addEventListener('click', exportCSV);
         undoBtn.addEventListener('click', undo);
         redoBtn.addEventListener('click', redo);
@@ -1644,7 +1658,7 @@
 
                 // Load Japanese font (Google Fonts - Noto Sans JP)
                 // Using WOFF2 for better compression and compatibility
-                const fontUrl = 'https://fonts.gstatic.com/s/notosansjp/v53/-F6jfjtqLzI2JPCgQBnw7HFyzSD-Asug.woff2';
+                const fontUrl = 'https://fonts.gstatic.com/s/notosansjp/v55/-F6jfjtqLzI2JPCgQBnw7HFyzSD-AsregP8VFBEj75s.ttf';
                 const fontBytes = await fetch(fontUrl).then(res => res.arrayBuffer());
                 const customFont = await pdfDoc.embedFont(fontBytes);
 
