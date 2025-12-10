@@ -41,7 +41,7 @@ const pageNumSpan = document.getElementById('page-num');
 const pageCountSpan = document.getElementById('page-count');
 const prevPageBtn = document.getElementById('prev-page');
 const nextPageBtn = document.getElementById('next-page');
-const downloadPdfBtn = document.getElementById('download-pdf');
+
 const printBtn = document.getElementById('print-btn');
 const commentList = document.getElementById('comment-list');
 const undoBtn = document.getElementById('undo-btn');
@@ -128,7 +128,7 @@ document.addEventListener('drop', (e) => {
 
 prevPageBtn.addEventListener('click', () => changePage(-1));
 nextPageBtn.addEventListener('click', () => changePage(1));
-downloadPdfBtn.addEventListener('click', downloadPdf);
+
 printBtn.addEventListener('click', () => window.print());
 exportCsvBtn.addEventListener('click', exportCSV);
 undoBtn.addEventListener('click', undo);
@@ -1130,8 +1130,6 @@ function exportCSV() {
 
 // --- PDF Download (Merge) ---
 
-async function downloadPdf() {
-    // Simply trigger the browser's print dialog
-    // The CSS @media print handles the layout to ensure it looks like a PDF
-    window.print();
-}
+// --- PDF Download (Print) ---
+
+
